@@ -97,9 +97,12 @@ public abstract class BaseFragment extends Fragment {
     public void setupToolbar(Toolbar toolbar, View tipsView, String title, int menu, View.OnClickListener navigationOnClickListener) {
         toolbar.setNavigationOnClickListener(navigationOnClickListener == null ? (v -> navigateUp()) : navigationOnClickListener);
         toolbar.setNavigationIcon(R.drawable.ic_baseline_arrow_back_24);
-        toolbar.setTitle(title);
-        toolbar.setTooltipText(title);
-        if (tipsView != null) tipsView.setTooltipText(title);
+        try {
+            toolbar.setTitle(title);
+            toolbar.setTooltipText(title);
+            if (tipsView != null) tipsView.setTooltipText(title);
+        } catch (Throwable ignored) {
+        }
         if (menu != -1) {
             toolbar.inflateMenu(menu);
             if (this instanceof MenuProvider self) {

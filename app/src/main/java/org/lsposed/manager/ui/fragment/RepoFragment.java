@@ -162,14 +162,18 @@ public class RepoFragment extends BaseFragment implements RepoLoader.RepoListene
         }
         runOnUiThread(() -> {
             if (binding != null) {
-                if (count[0] > 0) {
-                    binding.toolbar.setSubtitle(getResources().getQuantityString(R.plurals.module_repo_upgradable, count[0], count[0]));
-                } else if (count[0] == 0) {
-                    binding.toolbar.setSubtitle(getResources().getString(R.string.module_repo_up_to_date));
-                } else {
-                    binding.toolbar.setSubtitle(getResources().getString(R.string.loading));
+                try {
+                    if (count[0] > 0) {
+                        binding.toolbar.setSubtitle(getResources().getQuantityString(R.plurals.module_repo_upgradable, count[0], count[0]));
+                    } else if (count[0] == 0) {
+                        binding.toolbar.setSubtitle(getResources().getString(R.string.module_repo_up_to_date));
+                    } else {
+                        binding.toolbar.setSubtitle(getResources().getString(R.string.loading));
+                    }
+                    binding.toolbarLayout.setSubtitle(binding.toolbar.getSubtitle());
+                } catch (Throwable ignored) {
+
                 }
-                binding.toolbarLayout.setSubtitle(binding.toolbar.getSubtitle());
             }
         });
     }
@@ -222,7 +226,13 @@ public class RepoFragment extends BaseFragment implements RepoLoader.RepoListene
         super.onResume();
         adapter.refresh();
         if (preLoadWebview) {
-            mHandler.postDelayed(() -> new WebView(requireContext()), 500);
+            mHandler.postDelayed(() -> {
+                try {
+                    new WebView(requireContext());
+                } catch (Throwable e) {
+                    // WebView is not available, ignore preloading
+                }
+            }, 500);
             preLoadWebview = false;
         }
     }
@@ -323,8 +333,8 @@ public class RepoFragment extends BaseFragment implements RepoLoader.RepoListene
                 sb.append(hint);
                 final ForegroundColorSpan foregroundColorSpan = new ForegroundColorSpan(ResourceUtils.resolveColor(requireActivity().getTheme(), com.google.android.material.R.attr.colorPrimary));
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    final TypefaceSpan typefaceSpan = new TypefaceSpan(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                    sb.setSpan(typefaceSpan, sb.length() - hint.length(), sb.length(), Spannable.SPAN_INCLUSIVE_INCLUSIVE);
+                    final StyleSpan styleSpan = new StyleSpan(Typeface.BOLD);
+                    sb.setSpan(styleSpan, sb.length() - hint.length(), sb.length(), Spannable.SPAN_INCLUSIVE_INCLUSIVE);
                 } else {
                     final StyleSpan styleSpan = new StyleSpan(Typeface.BOLD);
                     sb.setSpan(styleSpan, sb.length() - hint.length(), sb.length(), Spannable.SPAN_INCLUSIVE_INCLUSIVE);

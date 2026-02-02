@@ -88,12 +88,12 @@ public class LSPApplicationService extends ILSPApplicationService.Stub {
                 var shm = ConfigManager.getInstance().getPreloadDex();
                 if (shm == null) return false;
                 // assume that write only a fd
-                shm.writeToParcel(reply, 0);
+                shm.writeFdToParcel(reply);
                 reply.writeLong(shm.getSize());
                 return true;
             }
             case OBFUSCATION_MAP_TRANSACTION_CODE: {
-                var obfuscation = ConfigManager.getInstance().dexObfuscate();
+                var obfuscation = ConfigFileManager.isPreloadDexObfuscated(); // Use runtime state!
                 var signatures = ObfuscationManager.getSignatures();
                 reply.writeInt(signatures.size() * 2);
                 for (Map.Entry<String, String> entry : signatures.entrySet()) {

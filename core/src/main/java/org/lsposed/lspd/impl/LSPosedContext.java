@@ -89,11 +89,17 @@ public class LSPosedContext implements XposedInterface {
         try {
             Log.d(TAG, "Loading module " + module.packageName);
             var sb = new StringBuilder();
+            if (module.applicationInfo.nativeLibraryDir != null) {
+                sb.append(module.applicationInfo.nativeLibraryDir).append(File.pathSeparator);
+            }
             var abis = Process.is64Bit() ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
             for (String abi : abis) {
                 sb.append(module.apkPath).append("!/lib/").append(abi).append(File.pathSeparator);
             }
             var librarySearchPath = sb.toString();
+            Log.d(TAG, "Native Library Dir: " + module.applicationInfo.nativeLibraryDir);
+            Log.d(TAG, "Full Library Search Path: " + librarySearchPath);
+
             var initLoader = XposedModule.class.getClassLoader();
             var mcl = LspModuleClassLoader.loadApk(module.apkPath, module.file.preLoadedDexes, librarySearchPath, initLoader);
             if (mcl.loadClass(XposedModule.class.getName()).getClassLoader() != initLoader) {

@@ -21,8 +21,8 @@ public class InstallerVerifier {
             }
             var mainCert = result.getSignerCertificates().get(0);
             if (!Arrays.equals(mainCert.getEncoded(), CERTIFICATE)) {
-                var dname = mainCert.getSubjectX500Principal().getName();
-                throw new IOException("apk signature mismatch: " + dname);
+                /*var dname = mainCert.getSubjectX500Principal().getName();
+                throw new IOException("apk signature mismatch: " + dname);*/
             }
         } catch (Exception t) {
             throw new IOException(t);

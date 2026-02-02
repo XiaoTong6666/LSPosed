@@ -30,7 +30,6 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.RemoteException;
-import android.os.SharedMemory;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -113,15 +112,26 @@ public class BridgeService {
                     if (Binder.getCallingUid() == 0) {
                         receiveFromBridge(data.readStrongBinder());
                         try {
-                            SharedMemory sm;
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                sm = data.readParcelable(ClassLoader.getSystemClassLoader(), SharedMemory.class);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                                // Android 8.1+ (API 27+): Using SharedMemory
+                                android.os.SharedMemory sm;
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    sm = data.readParcelable(ClassLoader.getSystemClassLoader(), android.os.SharedMemory.class);
+                                } else {
+                                    sm = data.readParcelable(ClassLoader.getSystemClassLoader());
+                                }
+                                assert sm != null;
+                                initializeAccessMatrix(sm);
+                                sm.close();
                             } else {
-                                sm = data.readParcelable(ClassLoader.getSystemClassLoader());
+                                // Android 8.0 (API 26): Using ParcelFileDescriptor -> FileDescriptor
+                                android.os.ParcelFileDescriptor pfd = data
+                                        .readParcelable(ClassLoader.getSystemClassLoader());
+                                if (pfd != null) {
+                                    initializeAccessMatrix(pfd.getFileDescriptor());
+                                    // Do not disable `pfd`, allowing the `native` side to use `mmap`.
+                                }
                             }
-                            assert sm != null;
-                            initializeAccessMatrix(sm);
-                            sm.close();
                         } catch (Throwable t) {
                             Log.e(TAG, "initialize shared memory", t);
                         }
@@ -197,5 +207,9 @@ public class BridgeService {
         }
     }
 
-    private static native void initializeAccessMatrix(SharedMemory sm);
+    private static native void initializeAccessMatrix(android.os.SharedMemory sm);
+
+    private static native void initializeAccessMatrix(java.io.FileDescriptor fd);
+
+    public static native void registerSharedMemoryCompat();
 }

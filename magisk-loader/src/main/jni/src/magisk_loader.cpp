@@ -109,6 +109,10 @@ namespace lspd {
             // or we proxy the request from system server binder
             auto &&next_binder = application_binder ? application_binder : system_server_binder;
             const auto [dex_fd, size] = instance->RequestLSPDex(env, next_binder);
+            if (dex_fd < 0) {
+                LOGE("Failed to request LSP dex");
+                return;
+            }
             auto obfs_map = instance->RequestObfuscationMap(env, next_binder);
             ConfigBridge::GetInstance()->obfuscation_map(std::move(obfs_map));
             LoadDex(env, PreloadedDex(dex_fd, size));
@@ -211,6 +215,10 @@ namespace lspd {
                     },
             };
             auto [dex_fd, size] = instance->RequestLSPDex(env, binder);
+            if (dex_fd < 0) {
+                LOGE("Failed to request LSP dex");
+                return;
+            }
             auto obfs_map = instance->RequestObfuscationMap(env, binder);
             ConfigBridge::GetInstance()->obfuscation_map(std::move(obfs_map));
             LoadDex(env, PreloadedDex(dex_fd, size));

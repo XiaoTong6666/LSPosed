@@ -30,14 +30,14 @@ fi
 
 require_new_android() {
   ui_print "*********************************************************"
-  ui_print "! Unsupported Android version ${1} (below Oreo MR1)"
+  ui_print "! Unsupported Android version ${1} (below Oreo)"
   ui_print "! Learn more from our GitHub"
   [ "$BOOTMODE" == "true" ] && am start -a android.intent.action.VIEW -d https://github.com/LSPosed/LSPosed/#supported-versions
   abort    "*********************************************************"
 }
 
 check_android_version() {
-  if [ "$API" -ge 27 ]; then
+  if [ "$API" -ge 26 ]; then
     ui_print "- Android SDK version: $API"
   else
     require_new_android "$API"

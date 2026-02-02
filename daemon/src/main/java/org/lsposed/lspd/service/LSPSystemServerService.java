@@ -24,7 +24,6 @@ import static org.lsposed.lspd.service.ServiceManager.getSystemServiceManager;
 
 import android.os.Build;
 import android.os.IBinder;
-import android.os.IServiceCallback;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.os.SystemProperties;
@@ -50,30 +49,13 @@ public class LSPSystemServerService extends ILSPSystemServerService.Stub impleme
         Log.d(TAG, "LSPSystemServerService::LSPSystemServerService");
         requested = -maxRetry;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            // Registers a callback when system is registering an authentic "serial" service
-            // And we are proxying all requests to that system service
-            var serviceCallback = new IServiceCallback.Stub() {
-                @Override
-                public void onRegistration(String name, IBinder binder) {
-                    Log.d(TAG, "LSPSystemServerService::LSPSystemServerService onRegistration: " + name + " " + binder);
-                    if (name.equals(PROXY_SERVICE_NAME) && binder != null && binder != LSPSystemServerService.this) {
-                        Log.d(TAG, "Register " + name + " " + binder);
-                        originService = binder;
-                        LSPSystemServerService.this.linkToDeath();
-                    }
-                }
-
-                @Override
-                public IBinder asBinder() {
-                    return this;
-                }
-            };
-            try {
-                getSystemServiceManager().registerForNotifications(PROXY_SERVICE_NAME, serviceCallback);
-            } catch (Throwable e) {
-                Log.e(TAG, "unregister: ", e);
-            }
+            ServiceCallbackHelper.register(this);
         }
+    }
+
+    void onServiceRegistered(IBinder binder) {
+        originService = binder;
+        linkToDeath();
     }
 
     @Override

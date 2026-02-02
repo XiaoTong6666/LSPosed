@@ -29,7 +29,6 @@ import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SELinux;
-import android.os.SharedMemory;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
@@ -94,7 +93,14 @@ public class ConfigFileManager {
     private static FileLocker locker = null;
     private static Resources res = null;
     private static ParcelFileDescriptor fd = null;
-    private static SharedMemory preloadDex = null;
+    private static org.lsposed.lspd.os.SharedMemoryCompat preloadDexCompat = null;
+
+    // Store whether the currently loaded DEX is obfuscated or not
+    private static boolean isPreloadDexObfuscated = true; // Default to true
+
+    public static boolean isPreloadDexObfuscated() {
+        return isPreloadDexObfuscated;
+    }
 
     static {
         try {
@@ -351,13 +357,19 @@ public class ConfigFileManager {
         });
     }
 
-    private static SharedMemory readDex(InputStream in, boolean obfuscate) throws IOException, ErrnoException {
-        var memory = SharedMemory.create(null, in.available());
+    private static org.lsposed.lspd.os.SharedMemoryCompat readDexCompat(InputStream in, int size, boolean obfuscate) throws IOException, ErrnoException {
+        var memory = org.lsposed.lspd.os.SharedMemoryCompat.create(null, size);
         var byteBuffer = memory.mapReadWrite();
-        Channels.newChannel(in).read(byteBuffer);
-        SharedMemory.unmap(byteBuffer);
+        int offset = 0;
+        int read;
+        var array = new byte[8192];
+        while (offset < size && (read = in.read(array)) >= 0) {
+            byteBuffer.put(array, 0, read);
+            offset += read;
+        }
+        org.lsposed.lspd.os.SharedMemoryCompat.unmap(byteBuffer);
         if (obfuscate) {
-            var newMemory = ObfuscationManager.obfuscateDex(memory);
+            var newMemory = ObfuscationManager.obfuscateDexCompat(memory);
             if (memory != newMemory) {
                 memory.close();
                 memory = newMemory;
@@ -367,13 +379,13 @@ public class ConfigFileManager {
         return memory;
     }
 
-    private static void readDexes(ZipFile apkFile, List<SharedMemory> preLoadedDexes,
-                                  boolean obfuscate) {
+    private static void readDexesCompat(ZipFile apkFile, List<org.lsposed.lspd.os.SharedMemoryCompat> preLoadedDexes,
+                                        boolean obfuscate) {
         int secondary = 2;
-        for (var dexFile = apkFile.getEntry("classes.dex"); dexFile != null;
-             dexFile = apkFile.getEntry("classes" + secondary + ".dex"), secondary++) {
+        for (var dexFile = apkFile.getEntry("classes.dex"); dexFile != null; dexFile = apkFile
+                .getEntry("classes" + secondary + ".dex"), secondary++) {
             try (var is = apkFile.getInputStream(dexFile)) {
-                preLoadedDexes.add(readDex(is, obfuscate));
+                preLoadedDexes.add(readDexCompat(is, (int) dexFile.getSize(), obfuscate));
             } catch (IOException | ErrnoException e) {
                 Log.w(TAG, "Can not load " + dexFile + " in " + apkFile, e);
             }
@@ -400,11 +412,11 @@ public class ConfigFileManager {
     static PreLoadedApk loadModule(String path, boolean obfuscate) {
         if (path == null) return null;
         var file = new PreLoadedApk();
-        var preLoadedDexes = new ArrayList<SharedMemory>();
+        var preLoadedDexes = new ArrayList<org.lsposed.lspd.os.SharedMemoryCompat>();
         var moduleClassNames = new ArrayList<String>(1);
         var moduleLibraryNames = new ArrayList<String>(1);
         try (var apkFile = new ZipFile(toGlobalNamespace(path))) {
-            readDexes(apkFile, preLoadedDexes, obfuscate);
+            readDexesCompat(apkFile, preLoadedDexes, obfuscate);
             readName(apkFile, "META-INF/xposed/java_init.list", moduleClassNames);
             if (moduleClassNames.isEmpty()) {
                 file.legacy = true;
@@ -455,15 +467,17 @@ public class ConfigFileManager {
         }
     }
 
-    synchronized static SharedMemory getPreloadDex(boolean obfuscate) {
-        if (preloadDex == null) {
-            try (var is = new FileInputStream("framework/lspd.dex")) {
-                preloadDex = readDex(is, obfuscate);
+    synchronized static org.lsposed.lspd.os.SharedMemoryCompat getPreloadDexCompat(boolean obfuscate) {
+        if (preloadDexCompat == null) {
+            isPreloadDexObfuscated = obfuscate; // Capture true state
+            var file = new File("framework/lspd.dex");
+            try (var is = new FileInputStream(file)) {
+                preloadDexCompat = readDexCompat(is, (int) file.length(), obfuscate);
             } catch (Throwable e) {
-                Log.e(TAG, "preload dex", e);
+                Log.e(TAG, "preload dex compat", e);
             }
         }
-        return preloadDex;
+        return preloadDexCompat;
     }
 
     static void ensureModuleFilePath(String path) throws RemoteException {

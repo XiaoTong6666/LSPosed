@@ -27,6 +27,11 @@ import android.app.ActivityThread;
 import android.app.LoadedApk;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
+import android.app.Application;
+import android.app.Instrumentation;
+import android.content.Context;
+import java.lang.reflect.Method;
+import org.lsposed.lspd.nativebridge.HookBridge;
 
 import androidx.annotation.NonNull;
 
@@ -112,7 +117,13 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
             }
 
             if (!isFirstPackage && !XposedInit.getLoadedModules().getOrDefault(packageName, Optional.of("")).isPresent()) {
+                // XposedBridge.log("LSPosed: Skipping " + packageName + " (not first package and no modules)");
                 return;
+            }
+            
+            boolean hasModules = XposedInit.getLoadedModules().getOrDefault(packageName, Optional.empty()).isPresent();
+            if (hasModules) {
+                 XposedBridge.log("LSPosed: Package " + packageName + " has modules loaded. first=" + isFirstPackage);
             }
 
             XC_LoadPackage.LoadPackageParam lpparam = new XC_LoadPackage.LoadPackageParam(
@@ -123,8 +134,12 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
             lpparam.appInfo = loadedApk.getApplicationInfo();
             lpparam.isFirstApplication = isFirstPackage;
 
-            if (isFirstPackage && XposedInit.getLoadedModules().getOrDefault(packageName, Optional.empty()).isPresent()) {
-                hookNewXSP(lpparam);
+            if (isFirstPackage) {
+                if (hasModules) {
+                    hookNewXSP(lpparam);
+                }
+                XposedBridge.log("LSPosed: invoking hookApplicationFix for " + lpparam.packageName);
+                hookApplicationFix(lpparam, loadedApk);
             }
 
             Hookers.logD("Call handleLoadedPackage: packageName=" + lpparam.packageName + " processName=" + lpparam.processName + " isFirstPackage=" + isFirstPackage + " classLoader=" + lpparam.classLoader + " appInfo=" + lpparam.appInfo);
@@ -204,5 +219,62 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
                 }
             });
         }
+    }
+
+    private static void hookApplicationFix(XC_LoadPackage.LoadPackageParam lpparam, Object loadedApk) {
+        if (Build.VERSION.SDK_INT != Build.VERSION_CODES.O && Build.VERSION.SDK_INT != Build.VERSION_CODES.O_MR1) {
+            return;
+        }
+        XposedBridge.log("LSPosed: Starting polling for Application instance on " + lpparam.packageName);
+        
+        new Thread(() -> {
+            try {
+                Application app = null;
+                for (int i = 0; i < 50; i++) { // Poll for up to 5 seconds
+                    if (i % 10 == 0) XposedBridge.log("LSPosed: Polling iteration " + i + " for " + lpparam.packageName);
+                    try {
+                        app = (Application) XposedHelpers.getObjectField(loadedApk, "mApplication");
+                    } catch (Throwable t) {
+                         // Ignore field access error during early init
+                    }
+                    if (app != null) {
+                         XposedBridge.log("LSPosed: Found Application instance for " + lpparam.packageName);
+                         break;
+                    }
+                    Thread.sleep(100);
+                }
+                
+                if (app == null) {
+                    XposedBridge.log("LSPosed Error: Timed out waiting for Application on " + lpparam.packageName);
+                    return;
+                }
+                
+                if (XposedHelpers.getAdditionalInstanceField(app, "LSPosed_Attach_Ran") != null) return;
+                XposedHelpers.setAdditionalInstanceField(app, "LSPosed_Attach_Ran", true);
+
+                Method attachMethod = Application.class.getDeclaredMethod("attach", Context.class);
+                Object[][] callbacks = HookBridge.callbackSnapshot(XC_MethodHook.class, attachMethod);
+                if (callbacks != null && callbacks.length > 1 && callbacks[1] != null) {
+                    Object[] legacyCallbacks = callbacks[1];
+                    if (legacyCallbacks.length > 0) {
+                        XposedBridge.log("LSPosed: Manually invoking " + legacyCallbacks.length + " Application.attach callbacks (via polling) for " + app.getPackageName());
+                        
+                        XC_MethodHook.MethodHookParam attachParam = new XC_MethodHook.MethodHookParam();
+                        attachParam.method = attachMethod;
+                        attachParam.thisObject = app;
+                        attachParam.args = new Object[]{app.getBaseContext()};
+                        attachParam.setResult(null);
+                        
+                        for (Object cb : legacyCallbacks) {
+                            if (cb instanceof XC_MethodHook) {
+                                ((XC_MethodHook) cb).callAfterHookedMethod(attachParam);
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                XposedBridge.log(t);
+            }
+        }).start();
     }
 }

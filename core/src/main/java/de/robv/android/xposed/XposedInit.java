@@ -229,8 +229,9 @@ public final class XposedInit {
             var apk = module.apkPath;
             var name = module.packageName;
             var file = module.file;
+            var appInfo = module.applicationInfo;
             loadedModules.put(name, Optional.of(apk)); // temporarily add it for XSharedPreference
-            if (!loadModule(name, apk, file)) {
+            if (!loadModule(name, apk, file, appInfo != null ? appInfo.nativeLibraryDir : null)) {
                 loadedModules.remove(name);
             }
         });
@@ -300,10 +301,13 @@ public final class XposedInit {
      * Load a module from an APK by calling the init(String) method for all classes defined
      * in <code>assets/xposed_init</code>.
      */
-    private static boolean loadModule(String name, String apk, PreLoadedApk file) {
+    private static boolean loadModule(String name, String apk, PreLoadedApk file, String nativeLibraryDir) {
         Log.i(TAG, "Loading legacy module " + name + " from " + apk);
 
         var sb = new StringBuilder();
+        if (nativeLibraryDir != null) {
+            sb.append(nativeLibraryDir).append(File.pathSeparator);
+        }
         var abis = Process.is64Bit() ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
         for (String abi : abis) {
             sb.append(apk).append("!/lib/").append(abi).append(File.pathSeparator);

@@ -3,10 +3,13 @@ package org.lsposed.lspd.service;
 import static org.lsposed.lspd.service.ServiceManager.TAG;
 
 import android.app.ActivityManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
+import android.os.ParcelFileDescriptor;
+import android.os.Parcelable;
 import android.os.ServiceManager;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -14,6 +17,7 @@ import android.util.Log;
 
 import org.lsposed.daemon.BuildConfig;
 
+import java.io.FileDescriptor;
 import java.lang.reflect.Field;
 import java.util.Map;
 
@@ -136,7 +140,32 @@ public class BridgeService {
                     data.writeInt(ACTION.ACTION_SEND_BINDER.ordinal());
                     Log.v(TAG, "binder " + binder.toString());
                     data.writeStrongBinder(binder);
-                    data.writeParcelable(ConfigManager.getInstance().getAccessMatrixMemory(), 0);
+                    // Write SharedMemory/PFD directly, not SharedMemoryCompat wrapper
+                    // because receiver's classloader doesn't have SharedMemoryCompat class
+                    var sharedMem = ConfigManager.getInstance().getAccessMatrixMemory();
+                    if (sharedMem != null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            // API 27+: Extract and write the native SharedMemory object
+                            Object nativeSharedMemory = sharedMem.getSharedMemoryObject();
+                            data.writeParcelable((Parcelable) nativeSharedMemory, 0);
+                        } else {
+                            // API 26: Create and write ParcelFileDescriptor from fd
+                            int fd = sharedMem.getFd();
+                            try {
+                                FileDescriptor fileDescriptor = new FileDescriptor();
+                                var fdField = FileDescriptor.class.getDeclaredField("descriptor");
+                                fdField.setAccessible(true);
+                                fdField.setInt(fileDescriptor, fd);
+                                ParcelFileDescriptor pfd = ParcelFileDescriptor.dup(fileDescriptor);
+                                data.writeParcelable(pfd, 0);
+                            } catch (Exception e) {
+                                Log.e(TAG, "Failed to write PFD for API 26", e);
+                                data.writeParcelable(null, 0);
+                            }
+                        }
+                    } else {
+                        data.writeParcelable(null, 0);
+                    }
                     if (bridgeService == null) break;
                     res = bridgeService.transact(TRANSACTION_CODE, data, reply, 0);
                     reply.readException();
