@@ -7,6 +7,7 @@ set(SOURCES
         dex2oat.cpp
         logcat.cpp
         obfuscation.cpp
+        sharedmem_compat.cpp
         )
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})

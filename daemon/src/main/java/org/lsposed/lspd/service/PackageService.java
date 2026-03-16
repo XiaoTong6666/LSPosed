@@ -347,6 +347,16 @@ public class PackageService {
     public static boolean performDexOptMode(String packageName) throws RemoteException {
         IPackageManager pm = getPackageManager();
         if (pm == null) return false;
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.O) {
+            try {
+                String filter = SystemProperties.get("pm.dexopt.install", "speed-profile");
+                Process p = Runtime.getRuntime().exec(new String[]{"cmd", "package", "compile", "-m", filter, "-f", packageName});
+                return p.waitFor() == 0;
+            } catch (Exception e) {
+                Log.e(TAG, "performDexOptMode failed for " + packageName, e);
+                return false;
+            }
+        }
         return pm.performDexOptMode(packageName,
                 SystemProperties.getBoolean("dalvik.vm.usejitprofiles", false),
                 SystemProperties.get("pm.dexopt.install", "speed-profile"), true, true, null);

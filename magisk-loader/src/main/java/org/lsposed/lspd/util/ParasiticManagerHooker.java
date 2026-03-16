@@ -257,11 +257,24 @@ public class ParasiticManagerHooker {
 
         XposedHelpers.findAndHookMethod(WebViewFactory.class, "getProvider", new XC_MethodReplacement() {
             @Override
-            protected Object replaceHookedMethod(MethodHookParam param) {
+            protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
                 var sProviderInstance = XposedHelpers.getStaticObjectField(WebViewFactory.class, "sProviderInstance");
-                if (sProviderInstance != null) return sProviderInstance;
-                //noinspection unchecked
-                var providerClass = (Class<WebViewFactoryProvider>) XposedHelpers.callStaticMethod(WebViewFactory.class, "getProviderClass");
+                if (sProviderInstance != null)
+                    return sProviderInstance;
+
+                // Try to get WebView provider class, but handle case where WebView is not installed
+                Class<WebViewFactoryProvider> providerClass;
+                try {
+                    //noinspection unchecked
+                    providerClass = (Class<WebViewFactoryProvider>) XposedHelpers.callStaticMethod(WebViewFactory.class,
+                            "getProviderClass");
+                } catch (Throwable t) {
+                    // WebView not installed, return null to avoid crash
+                    // The calling code should handle null WebViewFactoryProvider gracefully
+                    Hookers.logD("WebView is not installed, returning null");
+                    return null;
+                }
+
                 Method staticFactory = null;
                 try {
                     staticFactory = providerClass.getMethod(

@@ -41,7 +41,6 @@ import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.SELinux;
-import android.os.SharedMemory;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -92,7 +91,7 @@ import hidden.HiddenApiBridge;
 
 public class ConfigManager {
     private static ConfigManager instance = null;
-    private final SharedMemory accessMatrixMemory;
+    private final org.lsposed.lspd.os.SharedMemoryCompat accessMatrixMemory;
     // appid bitmap
     private final ByteBuffer accessMatrix;
 
@@ -180,13 +179,19 @@ public class ConfigManager {
     private Set<String> scopeRequestBlocked = new HashSet<>();
 
     private static SQLiteDatabase openDb() {
-        var params = new SQLiteDatabase.OpenParams.Builder()
-                .addOpenFlags(SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING)
-                .setErrorHandler(sqLiteDatabase -> Log.w(TAG, "database corrupted"));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            params.setSynchronousMode("NORMAL");
+            // API 28+: Using OpenParams.Builder
+            var params = new SQLiteDatabase.OpenParams.Builder()
+                    .addOpenFlags(SQLiteDatabase.CREATE_IF_NECESSARY | SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING)
+                    .setErrorHandler(sqLiteDatabase -> Log.w(TAG, "database corrupted"))
+                    .setSynchronousMode("NORMAL");
+            return SQLiteDatabase.openDatabase(ConfigFileManager.dbPath.getAbsoluteFile(), params.build());
+        } else {
+            // API 26/27: Using the legacy openDatabase
+            SQLiteDatabase db = SQLiteDatabase.openOrCreateDatabase(ConfigFileManager.dbPath.getAbsoluteFile(), null);
+            db.enableWriteAheadLogging();
+            return db;
         }
-        return SQLiteDatabase.openDatabase(ConfigFileManager.dbPath.getAbsoluteFile(), params.build());
     }
 
     private void updateCaches(boolean sync) {
@@ -341,7 +346,7 @@ public class ConfigManager {
         cacheThread.start();
         cacheHandler = new Handler(cacheThread.getLooper());
         try {
-            accessMatrixMemory = SharedMemory.create("access", 1250);
+            accessMatrixMemory = org.lsposed.lspd.os.SharedMemoryCompat.create("access", 1250);
             accessMatrix = accessMatrixMemory.mapReadWrite();
         } catch (ErrnoException e) {
             throw new RuntimeException(e);
@@ -447,8 +452,7 @@ public class ConfigManager {
         return processes;
     }
 
-    private @NonNull
-    Map<String, HashMap<String, Object>> fetchModuleConfig(String name, int user_id) {
+    private @NonNull Map<String, HashMap<String, Object>> fetchModuleConfig(String name, int user_id) {
         var config = new ConcurrentHashMap<String, HashMap<String, Object>>();
 
         try (Cursor cursor = db.query("configs", new String[]{"`group`", "`key`", "data"},
@@ -556,7 +560,7 @@ public class ConfigManager {
             if (lastModuleCacheTime >= requestModuleCacheTime) return;
             else lastModuleCacheTime = SystemClock.elapsedRealtime();
         }
-        Set<SharedMemory> toClose = ConcurrentHashMap.newKeySet();
+        Set<org.lsposed.lspd.os.SharedMemoryCompat> toClose = ConcurrentHashMap.newKeySet();
         try (Cursor cursor = db.query(true, "modules", new String[]{"module_pkg_name", "apk_path"},
                 "enabled = 1", null, null, null, null, null)) {
             if (cursor == null) {
@@ -651,7 +655,7 @@ public class ConfigManager {
             Log.d(TAG, module.getKey() + " " + module.getValue().apkPath);
         }
         cacheScopes();
-        toClose.forEach(SharedMemory::close);
+        toClose.forEach(org.lsposed.lspd.os.SharedMemoryCompat::close);
     }
 
     private synchronized void cacheScopes() {
@@ -1066,6 +1070,7 @@ public class ConfigManager {
 
     // this is for manager and should not use the cache result
     boolean dexObfuscate() {
+
         var bool = getModulePrefs("lspd", 0, "config").get("enable_dex_obfuscate");
         return bool == null || (boolean) bool;
     }
@@ -1186,8 +1191,16 @@ public class ConfigManager {
         List<String> result = new ArrayList<>();
         if (!getApi().equals("Zygisk")) return result;
         if (!ConfigFileManager.magiskDbPath.exists()) return result;
-        try (final SQLiteDatabase magiskDb =
-                     SQLiteDatabase.openDatabase(ConfigFileManager.magiskDbPath, new SQLiteDatabase.OpenParams.Builder().addOpenFlags(SQLiteDatabase.OPEN_READONLY).build())) {
+
+        SQLiteDatabase magiskDb = null;
+        try {
+            // API 28+: Use OpenParams, API 26/27: Use legacy openDatabase
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                magiskDb = SQLiteDatabase.openDatabase(ConfigFileManager.magiskDbPath, new SQLiteDatabase.OpenParams.Builder().addOpenFlags(SQLiteDatabase.OPEN_READONLY).build());
+            } else {
+                magiskDb = SQLiteDatabase.openDatabase(ConfigFileManager.magiskDbPath.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+            }
+
             try (Cursor cursor = magiskDb.query("settings", new String[]{"value"}, "`key`=?", new String[]{"denylist"}, null, null, null)) {
                 if (!cursor.moveToNext()) return result;
                 int valueIndex = cursor.getColumnIndex("value");
@@ -1203,6 +1216,10 @@ public class ConfigManager {
             }
         } catch (Throwable e) {
             Log.e(TAG, "get denylist", e);
+        } finally {
+            if (magiskDb != null) {
+                magiskDb.close();
+            }
         }
         return result;
     }
@@ -1236,11 +1253,11 @@ public class ConfigManager {
         os.closeEntry();
     }
 
-    synchronized SharedMemory getPreloadDex() {
-        return ConfigFileManager.getPreloadDex(dexObfuscate);
+    synchronized org.lsposed.lspd.os.SharedMemoryCompat getPreloadDex() {
+        return ConfigFileManager.getPreloadDexCompat(dexObfuscate);
     }
 
-    SharedMemory getAccessMatrixMemory() {
+    org.lsposed.lspd.os.SharedMemoryCompat getAccessMatrixMemory() {
         return accessMatrixMemory;
     }
 }

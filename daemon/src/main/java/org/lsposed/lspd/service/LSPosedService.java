@@ -409,10 +409,13 @@ public class LSPosedService extends ILSPosedService.Stub {
 
     private void registerUidObserver() {
         try {
-            var which = HiddenApiBridge.ActivityManager_UID_OBSERVER_ACTIVE()
+            int which = HiddenApiBridge.ActivityManager_UID_OBSERVER_ACTIVE()
                     | HiddenApiBridge.ActivityManager_UID_OBSERVER_GONE()
-                    | HiddenApiBridge.ActivityManager_UID_OBSERVER_IDLE()
-                    | HiddenApiBridge.ActivityManager_UID_OBSERVER_CACHED();
+                    | HiddenApiBridge.ActivityManager_UID_OBSERVER_IDLE();
+            // UID_OBSERVER_CACHED was added in API 28
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                which |= HiddenApiBridge.ActivityManager_UID_OBSERVER_CACHED();
+            }
             LSPModuleService.uidClear();
             ActivityManagerService.registerUidObserver(new IUidObserver.Stub() {
                 @Override

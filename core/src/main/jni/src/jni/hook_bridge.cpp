@@ -222,33 +222,41 @@ LSP_DEF_NATIVE_METHOD(jobject, HookBridge, invokeSpecialMethod, jobject method, 
         jobject element;
         switch(shorty_char[i + 1]) {
             case 'I':
-                a[i].i = env->CallIntMethod(element = env->GetObjectArrayElement(args, i), get_int);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].i = element ? env->CallIntMethod(element, get_int) : 0;
                 break;
             case 'D':
-                a[i].d = env->CallDoubleMethod(element = env->GetObjectArrayElement(args, i), get_double);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].d = element ? env->CallDoubleMethod(element, get_double) : 0.0;
                 break;
             case 'J':
-                a[i].j = env->CallLongMethod(element = env->GetObjectArrayElement(args, i), get_long);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].j = element ? env->CallLongMethod(element, get_long) : 0;
                 break;
             case 'F':
-                a[i].f = env->CallFloatMethod(element = env->GetObjectArrayElement(args, i), get_float);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].f = element ? env->CallFloatMethod(element, get_float) : 0.0f;
                 break;
             case 'S':
-                a[i].s = env->CallShortMethod(element = env->GetObjectArrayElement(args, i), get_short);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].s = element ? env->CallShortMethod(element, get_short) : 0;
                 break;
             case 'B':
-                a[i].b = env->CallByteMethod(element = env->GetObjectArrayElement(args, i), get_byte);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].b = element ? env->CallByteMethod(element, get_byte) : 0;
                 break;
             case 'C':
-                a[i].c = env->CallCharMethod(element = env->GetObjectArrayElement(args, i), get_char);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].c = element ? env->CallCharMethod(element, get_char) : 0;
                 break;
             case 'Z':
-                a[i].z = env->CallBooleanMethod(element = env->GetObjectArrayElement(args, i), get_boolean);
+                element = env->GetObjectArrayElement(args, i);
+                a[i].z = element ? env->CallBooleanMethod(element, get_boolean) : false;
                 break;
             default:
             case 'L':
-                a[i].l = env->GetObjectArrayElement(args, i);
                 element = nullptr;
+                a[i].l = env->GetObjectArrayElement(args, i);
                 break;
         }
         if (element) env->DeleteLocalRef(element);
@@ -329,15 +337,24 @@ LSP_DEF_NATIVE_METHOD(jobjectArray, HookBridge, callbackSnapshot, jclass callbac
 }
 
 static JNINativeMethod gMethods[] = {
-    LSP_NATIVE_METHOD(HookBridge, hookMethod, "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/lang/Object;)Z"),
-    LSP_NATIVE_METHOD(HookBridge, unhookMethod, "(ZLjava/lang/reflect/Executable;Ljava/lang/Object;)Z"),
+    LSP_NATIVE_METHOD(HookBridge, hookMethod,
+                      "(ZLjava/lang/reflect/Executable;Ljava/lang/Class;ILjava/"
+                      "lang/Object;)Z"),
+    LSP_NATIVE_METHOD(HookBridge, unhookMethod,
+                      "(ZLjava/lang/reflect/Executable;Ljava/lang/Object;)Z"),
     LSP_NATIVE_METHOD(HookBridge, deoptimizeMethod, "(Ljava/lang/reflect/Executable;)Z"),
-    LSP_NATIVE_METHOD(HookBridge, invokeOriginalMethod, "(Ljava/lang/reflect/Executable;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;"),
-    LSP_NATIVE_METHOD(HookBridge, invokeSpecialMethod, "(Ljava/lang/reflect/Executable;[CLjava/lang/Class;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;"),
+    LSP_NATIVE_METHOD(HookBridge, invokeOriginalMethod,
+                      "(Ljava/lang/reflect/Executable;Ljava/lang/Object;[Ljava/"
+                      "lang/Object;)Ljava/lang/Object;"),
+    LSP_NATIVE_METHOD(HookBridge, invokeSpecialMethod,
+                      "(Ljava/lang/reflect/Executable;[CLjava/lang/Class;Ljava/"
+                      "lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;"),
     LSP_NATIVE_METHOD(HookBridge, allocateObject, "(Ljava/lang/Class;)Ljava/lang/Object;"),
     LSP_NATIVE_METHOD(HookBridge, instanceOf, "(Ljava/lang/Object;Ljava/lang/Class;)Z"),
     LSP_NATIVE_METHOD(HookBridge, setTrusted, "(Ljava/lang/Object;)Z"),
-    LSP_NATIVE_METHOD(HookBridge, callbackSnapshot, "(Ljava/lang/Class;Ljava/lang/reflect/Executable;)[[Ljava/lang/Object;"),
+    LSP_NATIVE_METHOD(HookBridge, callbackSnapshot,
+                      "(Ljava/lang/Class;Ljava/lang/reflect/"
+                      "Executable;)[[Ljava/lang/Object;"),
 };
 
 void RegisterHookBridge(JNIEnv *env) {

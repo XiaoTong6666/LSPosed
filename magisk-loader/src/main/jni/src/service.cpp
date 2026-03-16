@@ -21,20 +21,66 @@
 // Created by loves on 2/7/2021.
 //
 
-#include <dobby.h>
-#include <thread>
-#include <atomic>
-#include <android/sharedmem.h>
-#include <android/sharedmem_jni.h>
-#include <sys/mman.h>
-#include "loader.h"
 #include "service.h"
-#include "context.h"
-#include "utils/jni_helper.hpp"
-#include "symbol_cache.h"
 #include "config_bridge.h"
+#include "context.h"
 #include "elf_util.h"
+#include "loader.h"
 #include "native_util.h"
+#include "symbol_cache.h"
+#include "utils/jni_helper.hpp"
+#include <atomic>
+#include <dobby.h>
+#if __has_include(<linux/ashmem.h>)
+#include <linux/ashmem.h>
+#endif
+#include <pthread.h>
+
+#ifndef ASHMEM_NAME_LEN
+#define ASHMEM_NAME_LEN 256
+#endif
+
+#ifndef ASHMEM_SET_NAME
+#define ASHMEM_SET_NAME _IOW(0x77, 1, char[ASHMEM_NAME_LEN])
+#endif
+
+#ifndef ASHMEM_SET_SIZE
+#define ASHMEM_SET_SIZE _IOW(0x77, 3, size_t)
+#endif
+
+#ifndef ASHMEM_SET_PROT_MASK
+#define ASHMEM_SET_PROT_MASK _IOW(0x77, 5, unsigned long)
+#endif
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <thread>
+
+// API 27+ SharedMemory JNI API
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+// API 27+ SharedMemory function pointers
+typedef int (*ASharedMemory_create_func)(const char *name, size_t size);
+typedef int (*ASharedMemory_dupFromJava_func)(JNIEnv *env, jobject sharedMemory);
+typedef int (*ASharedMemory_setProt_func)(int fd, int prot);
+
+static ASharedMemory_create_func g_ASharedMemory_create = nullptr;
+static ASharedMemory_dupFromJava_func g_ASharedMemory_dupFromJava = nullptr;
+static ASharedMemory_setProt_func g_ASharedMemory_setProt = nullptr;
+
+static void LoadSharedMemorySymbols() {
+    static pthread_once_t once_control = PTHREAD_ONCE_INIT;
+    pthread_once(&once_control, []() {
+        void *handle = dlopen("libandroid.so", RTLD_NOW);
+        if (handle) {
+            g_ASharedMemory_create = (ASharedMemory_create_func) dlsym(handle, "ASharedMemory_create");
+            g_ASharedMemory_dupFromJava = (ASharedMemory_dupFromJava_func) dlsym(handle, "ASharedMemory_dupFromJava");
+            g_ASharedMemory_setProt = (ASharedMemory_setProt_func) dlsym(handle, "ASharedMemory_setProt");
+        }
+    });
+}
+
 
 using namespace lsplant;
 
@@ -121,17 +167,179 @@ namespace lspd {
         return instance()->call_boolean_method_va_backup_(env, obj, methodId, args);
     }
 
-    LSP_DEF_NATIVE_METHOD(void, BridgeService, initializeAccessMatrix, jobject shared_memory) {
+    // API 27+: Using SharedMemory Java objects via Dynamic Loading or Reflection Fallback
+    static void BridgeService_initializeAccessMatrix_SM(JNIEnv *env, jclass, jobject shared_memory) {
         if (access_matrix != nullptr) return;
-        auto fd = ASharedMemory_dupFromJava(env, shared_memory);
+        
+        int fd = -1;
+        LoadSharedMemorySymbols();
+
+        // Try ASharedMemory_dupFromJava first (API 27+)
+        if (g_ASharedMemory_dupFromJava) {
+            fd = g_ASharedMemory_dupFromJava(env, shared_memory);
+            if (fd >= 0) LOGD("Using ASharedMemory_dupFromJava, fd=%d", fd);
+        }
+
+        // Fallback to Reflection if dynamic loading failed or returned invalid fd
+        if (fd < 0) {
+            LOGD("Falling back to Reflection for SharedMemory FD");
+            jclass sm_class = env->GetObjectClass(shared_memory);
+            jmethodID get_fd_method = env->GetMethodID(sm_class, "getFileDescriptor", "()Ljava/io/FileDescriptor;");
+            if (!get_fd_method) {
+                 LOGE("SharedMemory.getFileDescriptor not found");
+                 return;
+            }
+            jobject fd_obj = env->CallObjectMethod(shared_memory, get_fd_method);
+            if (env->ExceptionCheck()) {
+                 env->ExceptionClear();
+                 LOGE("exception calling getFileDescriptor");
+                 return;
+            }
+            if (fd_obj) {
+                jclass fd_class = env->GetObjectClass(fd_obj);
+                jfieldID fd_field = env->GetFieldID(fd_class, "descriptor", "I");
+                if (fd_field) {
+                    fd = env->GetIntField(fd_obj, fd_field);
+                }
+            }
+        }
+
+        if (fd < 0) {
+            LOGE("Failed to get fd from SharedMemory");
+            return;
+        }
+
         auto addr = mmap(nullptr, 1250, PROT_READ, MAP_SHARED, fd, 0);
         if (addr == MAP_FAILED) {
             PLOGE("map access matrix");
         } else {
-            LOGD("access matrix at {}", addr);
+            LOGD("access matrix from SharedMemory at {}", addr);
             access_matrix = reinterpret_cast<uint8_t*>(addr);
         }
-        close(fd);
+
+        if (g_ASharedMemory_dupFromJava && fd >= 0) {
+             // Check if we actually used dupFromJava path. The logic above sets fd.
+             // If g_ASharedMemory_dupFromJava is not null, we tried it.
+             // If it succeeded, fd >= 0.
+             close(fd);
+        }
+    }
+
+    // API 26: Using FileDescriptor 
+    static void BridgeService_initializeAccessMatrix_FD(JNIEnv *env, jclass, jobject file_descriptor) {
+        if (access_matrix != nullptr) return;
+
+        jclass fd_class = env->GetObjectClass(file_descriptor);
+        jfieldID fd_field = env->GetFieldID(fd_class, "descriptor", "I");
+        int fd = env->GetIntField(file_descriptor, fd_field);
+        
+        if (ioctl(fd, ASHMEM_SET_PROT_MASK, PROT_READ) < 0) {
+            PLOGE("set protection access matrix");
+        }
+        auto addr = mmap(nullptr, 1250, PROT_READ, MAP_SHARED, fd, 0);
+        if (addr == MAP_FAILED) {
+            PLOGE("map access matrix");
+        } else {
+            LOGD("access matrix from FileDescriptor at {}", addr);
+            access_matrix = reinterpret_cast<uint8_t*>(addr);
+        }
+    }
+
+    // SharedMemoryCompat native methods for API 26 runtime support
+    // These methods are always compiled but only called on API 26 devices at runtime
+
+    extern "C" JNIEXPORT jobject JNICALL Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeMap(
+        JNIEnv* env, jclass, jint fd, jint size, jboolean readOnly) {
+        int prot = readOnly ? PROT_READ : (PROT_READ | PROT_WRITE);
+        void* addr = mmap(nullptr, size, prot, MAP_SHARED, fd, 0);
+        if (addr == MAP_FAILED) {
+            PLOGE("SharedMemoryCompat nativeMap failed");
+            return nullptr;
+        }
+        LOGD("SharedMemoryCompat: mapped fd={} at {}, size={}", fd, addr, size);
+        return env->NewDirectByteBuffer(addr, size);
+    }
+
+    extern "C" JNIEXPORT void JNICALL Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeUnmap(
+        JNIEnv* env, jclass, jobject buffer, jint size) {
+        if (buffer == nullptr)
+            return;
+        void* addr = env->GetDirectBufferAddress(buffer);
+        if (addr != nullptr && size > 0) {
+            munmap(addr, size);
+            LOGD("SharedMemoryCompat: unmapped buffer at {}, size={}", addr, size);
+        }
+    }
+
+    extern "C" JNIEXPORT void JNICALL Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeClose(JNIEnv*,
+                                                                                              jclass,
+                                                                                              jint fd) {
+        if (fd >= 0) {
+            close(fd);
+            LOGD("SharedMemoryCompat: closed fd={}", fd);
+        }
+    }
+
+    extern "C" JNIEXPORT jint JNICALL Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeCreate(
+        JNIEnv* env, jclass, jstring name, jint size) {
+        LoadSharedMemorySymbols();
+        
+        // Try ASharedMemory_create first
+        if (g_ASharedMemory_create) {
+             const char* nameStr = name ? env->GetStringUTFChars(name, nullptr) : nullptr;
+             int fd = g_ASharedMemory_create(nameStr, size);
+             if (nameStr) env->ReleaseStringUTFChars(name, nameStr);
+             if (fd >= 0) {
+                 LOGD("Using ASharedMemory_create, fd=%d", fd);
+                 return fd;
+             }
+             // If failed, fallthrough to ashmem? Usually ASharedMemory_create fail means real fail.
+             // But we can fallback if symbol is missing.
+        }
+
+        // Fallback to ashmem
+        LOGD("Falling back to ashmem for creation");
+        int fd = open("/dev/ashmem", O_RDWR);
+        if (fd < 0) {
+            PLOGE("Failed to open ashmem device");
+            return -errno;
+        }
+
+        if (name != nullptr) {
+            const char* nameStr = env->GetStringUTFChars(name, nullptr);
+            if (nameStr != nullptr) {
+                char buf[ASHMEM_NAME_LEN];
+                strncpy(buf, nameStr, ASHMEM_NAME_LEN - 1);
+                buf[ASHMEM_NAME_LEN - 1] = '\0';
+                if (ioctl(fd, ASHMEM_SET_NAME, buf) < 0) {
+                    PLOGE("Failed to set ashmem name");
+                }
+                env->ReleaseStringUTFChars(name, nameStr);
+            }
+        }
+
+        if (ioctl(fd, ASHMEM_SET_SIZE, (size_t)size) < 0) {
+            PLOGE("Failed to set ashmem size");
+            close(fd);
+            return -errno;
+        }
+
+        return fd;
+    }
+
+    extern "C" JNIEXPORT jint JNICALL
+    Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeSetProt(JNIEnv*, jclass, jint fd, jint prot) {
+        LoadSharedMemorySymbols();
+        
+        if (g_ASharedMemory_setProt) {
+             return g_ASharedMemory_setProt(fd, prot);
+        }
+
+        if (ioctl(fd, ASHMEM_SET_PROT_MASK, (unsigned long)prot) < 0) {
+            PLOGE("Failed to set ashmem prot");
+            return -errno;
+        }
+        return 0;
     }
 
     void Service::InitService(JNIEnv *env) {
@@ -204,6 +412,30 @@ namespace lspd {
         return signature;
     }
 
+    // SharedMemoryCompat registration helper
+    LSP_DEF_NATIVE_METHOD(void, BridgeService, registerSharedMemoryCompat) {
+        auto sm_clazz = env->FindClass("org/lsposed/lspd/os/SharedMemoryCompat");
+        if (!sm_clazz) {
+            if (env->ExceptionCheck())
+                env->ExceptionClear();
+            LOGE("SharedMemoryCompat not found in registerSharedMemoryCompat");
+            return;
+        }
+
+        JNINativeMethod sm_methods[] = {
+            {"nativeMap", "(IIZ)Ljava/nio/ByteBuffer;",
+             (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeMap},
+            {"nativeUnmap", "(Ljava/nio/ByteBuffer;I)V",
+             (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeUnmap},
+            {"nativeClose", "(I)V", (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeClose},
+            {"nativeCreate", "(Ljava/lang/String;I)I",
+             (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeCreate},
+            {"nativeSetProt", "(II)I",
+             (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeSetProt}};
+        JNI_RegisterNatives(env, sm_clazz, sm_methods, 5);
+        LOGD("Registered SharedMemoryCompat natives via helper");
+    }
+
     void Service::HookBridge(const Context &context, JNIEnv *env) {
         static bool kHooked = false;
         // This should only be ran once, so unlikely
@@ -259,10 +491,32 @@ namespace lspd {
         lspd::GetLibBinder(true);
 
         JNINativeMethod m[] = {
-                LSP_NATIVE_METHOD(BridgeService, initializeAccessMatrix, "(Landroid/os/SharedMemory;)V")
-        };
+            {"initializeAccessMatrix", "(Landroid/os/SharedMemory;)V", (void*)BridgeService_initializeAccessMatrix_SM},
+            {"initializeAccessMatrix", "(Ljava/io/FileDescriptor;)V", (void*)BridgeService_initializeAccessMatrix_FD},
+            LSP_NATIVE_METHOD(BridgeService, registerSharedMemoryCompat, "()V")};
 
-        JNI_RegisterNatives(env, bridge_service_class_, m, 1);
+        JNI_RegisterNatives(env, bridge_service_class_, m, 3);
+
+        // Register SharedMemoryCompat natives for API 26 (runtime check done by
+        // caller, but we register always to be safe)
+        if (auto shared_mem_class =
+                context.FindClassFromCurrentLoader(env, "org/lsposed/lspd/os/SharedMemoryCompat")) {
+            JNINativeMethod sm_methods[] = {
+                {"nativeMap", "(IIZ)Ljava/nio/ByteBuffer;",
+                 (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeMap},
+                {"nativeUnmap", "(Ljava/nio/ByteBuffer;I)V",
+                 (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeUnmap},
+                {"nativeClose", "(I)V", (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeClose},
+                {"nativeCreate", "(Ljava/lang/String;I)I",
+                 (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeCreate},
+                {"nativeSetProt", "(II)I",
+                 (void*)Java_org_lsposed_lspd_os_SharedMemoryCompat_nativeSetProt}};
+            JNI_RegisterNatives(env, shared_mem_class, sm_methods, 5);
+        } else {
+            if (env->ExceptionCheck())
+                env->ExceptionClear();
+            LOGW("SharedMemoryCompat class not found");
+        }
 
         LOGD("Done InitService");
     }
@@ -369,6 +623,10 @@ namespace lspd {
             return {-1, 0};
         }
         auto parcel_fd = JNI_CallObjectMethod(env, wrapper.reply, read_file_descriptor_method_);
+        if (!parcel_fd) {
+            LOGE("Service::RequestLSPDex: failed to read file descriptor");
+            return {-1, 0};
+        }
         int fd = JNI_CallIntMethod(env, parcel_fd, detach_fd_method_);
         auto size = static_cast<size_t>(JNI_CallLongMethod(env, wrapper.reply, read_long_method_));
         LOGD("fd={}, size={}", fd, size);
@@ -386,6 +644,7 @@ namespace lspd {
             return ret;
         }
         auto size = JNI_CallIntMethod(env, wrapper.reply, read_int_method_);
+        LOGI("RequestObfuscationMap: parcel size={}", size);
         if (!size || (size & 1) == 1) {
             LOGW("Service::RequestObfuscationMap: invalid parcel size");
         }
